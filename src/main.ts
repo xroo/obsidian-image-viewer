@@ -1,99 +1,290 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
+import { App, Plugin, TFile } from 'obsidian';
+import { ItemView, WorkspaceLeaf } from 'obsidian';
 
-// Remember to rename these classes and interfaces!
-
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+export default class ImageViewer extends Plugin {
 
 	async onload() {
-		await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
+		this.registerView(VIEW_TYPE_IMAGE, leaf => new ImageView(leaf));
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
-
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
+		this.registerEvent(
+			this.app.workspace.on('file-open', async (file: TFile) => {
+				if (file && ImageViewer.isImageFile(file)) {
+					this.openInViewer(file);
 				}
-				return false;
-			}
-		});
+			})
+		);
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-
 	}
 
-	onunload() {
+	onunload() {}
+
+
+	static isImageFile(file: TFile): boolean {
+		const imageExtensions = new Set([
+			'png', 'jpg', 'jpeg', 'gif',
+			'bmp', 'svg', 'webp', 'avif', 
+			'tiff', 'ico', 'heic'
+		]);
+		return imageExtensions.has(file.extension.toLowerCase());
 	}
 
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MyPluginSettings>);
-	}
+	async openInViewer(imageFile: TFile): Promise<void> {
+		// Ищем существующую вкладку с галереей
+		let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_IMAGE)[0];
 
-	async saveSettings() {
-		await this.saveData(this.settings);
+		if (!leaf) {
+			leaf = this.app.workspace.getLeaf(true);
+			await leaf.setViewState({type: VIEW_TYPE_IMAGE, active: true});
+		}
+
+		// Preventing the opening of native imave viewer by closing it
+		this.app.workspace.getLeavesOfType('image')
+			.filter(leaf => leaf.view.getState()?.file === imageFile.path)
+			.forEach(leaf => leaf.detach());
+
+		const view = leaf.view as ImageView;
+		await view.loadImage(imageFile);
+
+		this.app.workspace.revealLeaf(leaf);
 	}
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
+export const VIEW_TYPE_IMAGE = 'image-viewer';
+
+export class ImageView extends ItemView {
+	currentImage: TFile | null = null;
+	mainImageEl: HTMLImageElement;
+	thumbnailStrip: HTMLElement;
+	imageList: TFile[] = []; // Список изображений в текущей папке
+	currentIndex: number = -1; // Индекс текущего изображения
+
+	// Image Zoom and Drag Fields
+	private zoomLevel: number = 1.0;
+	private maxZoom: number = 5.0;
+	private minZoom: number = 0.2;
+	private zoomStep: number = 0.1;
+	private isDragging: boolean = false;
+	private dragStartX: number = 0;
+	private dragStartY: number = 0;
+	private translateX: number = 0;
+	private translateY: number = 0;
+
+	getViewType()                    { return VIEW_TYPE_IMAGE; }
+	getDisplayText(): string         { return 'Image Viewer'; }
+	getIcon(): string                { return 'images'; }
+	constructor(leaf: WorkspaceLeaf) { super(leaf); }
+
+	async onOpen() {
+		const container = this.contentEl;
+		container.empty();
+
+		const wrapper = container.createEl('div', { cls: 'image-gallery-container' });
+		const displayArea = wrapper.createEl('div', { cls: 'image-display-area' });
+
+		this.mainImageEl = displayArea.createEl('img', { 
+			cls: 'main-image',
+			attr: { src: '' }
+		});
+
+		this.thumbnailStrip = wrapper.createEl('div', { cls: 'thumbnail-strip' });
+
+		this.setupEventListeners();
+
+		if (this.currentImage) {
+			await this.loadImage(this.currentImage);
+		}
+
 	}
 
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
+	private setupEventListeners(): void {
+		// Zoom and drag
+		this.mainImageEl.addEventListener('wheel', e => this.handleZoom(e), { passive: false });
+		this.mainImageEl.addEventListener('mousedown', e => this.startDrag(e));
+		this.mainImageEl.addEventListener('dblclick', () => this.resetZoom());
+
+		this.mainImageEl.addEventListener('dragstart', (e) => e.preventDefault());
+
+		document.addEventListener('mousemove', e => this.doDrag(e));
+		document.addEventListener('mouseup', () => this.stopDrag());
+
+		// Горизонтальный скролл миниатюр
+		this.thumbnailStrip.addEventListener('wheel', (e) => {
+			if (e.deltaY !== 0) {
+				this.thumbnailStrip.scrollLeft += e.deltaY;
+				e.preventDefault();
+			}
+		}, { passive: false });
+
+		// Keyboard navigation
+		this.registerDomEvent(document, 'keydown', (event: KeyboardEvent) => {
+			if (!this.containerEl.isShown()) return;
+
+			switch(event.key) {
+				case 'ArrowLeft':
+					event.preventDefault();
+					this.navigateImage(-1);
+					break;
+				case 'ArrowRight':
+					event.preventDefault();
+					this.navigateImage(1);
+					break;
+			}
+		});
 	}
 
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
+	async loadImage(imageFile: TFile): Promise<void> {
+		this.currentImage = imageFile;
+		this.setTabTitle(imageFile.basename);
+		this.mainImageEl.src = this.app.vault.getResourcePath(imageFile);
+		this.mainImageEl.alt = imageFile.name;
+
+		await this.updateImageList(imageFile);
+		await this.updateThumbnails();
+		this.resetZoom();
 	}
+
+	private setTabTitle(title: string): void {
+		this.leaf.tabHeaderInnerTitleEl.setText(title);
+	}
+
+	// Получаем все изображения в папке текущего файла
+	async updateImageList(currentFile: TFile): Promise<void> {
+		if (!currentFile?.parent) return;
+
+		this.imageList = this.app.vault.getFiles()
+			.filter(file => 
+				file.parent?.path === currentFile.parent.path && 
+				ImageViewer.isImageFile(file)
+			).sort((a, b) => a.name.localeCompare(b.name));
+
+		this.currentIndex = this.imageList.findIndex(file => file.path === currentFile.path);
+	}
+
+	private async navigateImage(direction: -1 | 1): Promise<void> {
+		if (this.imageList.length === 0) return;
+
+		const newIndex = this.currentIndex + direction;
+		if (newIndex >= 0 && newIndex < this.imageList.length) {
+			await this.loadImage(this.imageList[newIndex]);
+		}
+	}
+
+	async showPrevImage(): Promise<void> {
+		await this.navigateImage(-1);
+	}
+
+	async showNextImage(): Promise<void> {
+		await this.navigateImage(1);
+	}
+
+	// Создание миниатюр (базовая версия)
+	async updateThumbnails(): Promise<void> {
+		if (!this.thumbnailStrip) return;
+
+		this.thumbnailStrip.empty();
+
+		this.imageList.forEach((imgFile, index) => {
+			const isActive = index === this.currentIndex;
+			const thumbWrapper = this.thumbnailStrip.createEl('div', {
+				cls: `thumbnail-wrapper ${isActive ? 'active' : ''}`,
+				attr: { 'data-index': index.toString() }
+			});
+
+			const thumb = thumbWrapper.createEl('img', {
+				cls: 'thumbnail',
+				attr: {
+					src: this.app.vault.getResourcePath(imgFile),
+					alt: imgFile.basename
+				}
+			});
+
+			// Обработчик клика на миниатюру
+			if (index !== this.currentIndex) {
+				thumb.addEventListener('click', () => this.loadImage(imgFile));
+			}
+		});
+		this.scrollToActiveThumbnail();
+	}
+
+	private scrollToActiveThumbnail(): void {
+		if (this.currentIndex < 0) return;
+		
+		const activeThumb = this.thumbnailStrip.querySelector(`.thumbnail-wrapper[data-index="${this.currentIndex}"]`);
+		if (activeThumb) {
+			activeThumb.scrollIntoView({
+				behavior: 'smooth',
+				block: 'nearest',
+				inline: 'center'
+			});
+		}
+	}
+
+	// Обработка колесика мыши
+	handleZoom(event: WheelEvent): void {
+		event.preventDefault();
+
+		// Ctrl/Cmd + колесико = зум, иначе - навигация
+		if (event.ctrlKey || event.metaKey) {
+			// Зум
+			const delta = Math.sign(event.deltaY) > 0 ? -1 : 1;
+			this.zoomLevel = Math.max(
+				this.minZoom,
+				Math.min(this.maxZoom, this.zoomLevel + delta * this.zoomStep)
+			);
+
+			this.applyZoom();
+
+		} else {
+			this.navigateImage(event.deltaY > 0 ? 1 : -1);
+		}
+	}
+
+	// Применение зума к изображению
+	private applyZoom(): void {
+		if (!this.mainImageEl) return;
+
+		const transform = `scale(${this.zoomLevel}) translate(${this.translateX}px, ${this.translateY}px)`;
+		this.mainImageEl.style.transform = transform;
+		this.mainImageEl.style.transformOrigin = 'center center';
+	    // Показываем курсор "рука" при зуме > 100%
+		this.mainImageEl.style.cursor = this.zoomLevel > 1.0 ? 'grab' : 'zoom-in';
+
+		if (this.zoomLevel === 1.0) {
+			this.translateX = this.translateY = 0;
+		}
+	}
+
+	// Сброс зума (например, по двойному клику)
+	resetZoom(): void {
+		this.zoomLevel = 1.0;
+		this.translateX = this.translateY = 0;
+		this.applyZoom();
+	}
+
+	// Методы для перетаскивания зуммированного изображения
+	private startDrag(event: MouseEvent): void {
+		if (this.zoomLevel <= 1.0) return;
+
+		this.isDragging = true;
+		this.dragStartX = event.clientX - this.translateX * this.zoomLevel;
+		this.dragStartY = event.clientY - this.translateY * this.zoomLevel;
+		this.mainImageEl.style.cursor = 'grabbing';
+	}
+	private doDrag(event: MouseEvent): void {
+		if (!this.isDragging || this.zoomLevel <= 1.0) return;
+
+		this.translateX = (event.clientX - this.dragStartX) / this.zoomLevel;
+		this.translateY = (event.clientY - this.dragStartY) / this.zoomLevel;
+		this.applyZoom();
+	}
+	private stopDrag(): void {
+		this.isDragging = false;
+		if (this.mainImageEl && this.zoomLevel > 1.0) {
+			this.mainImageEl.style.cursor = 'grab';
+		}
+	}
+
+	async onClose() {}
 }

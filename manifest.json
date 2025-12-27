@@ -1,11 +1,10 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
-	"version": "1.0.0",
+	"id": "obsidian-image-viewer",
+	"name": "Image Viewer",
+	"version": "0.0.1",
 	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"description": "Simple image viewer for Obsidian. Scrolls images through the folder, zooms by CTRL+Scroll, has a thumbnails pannel",
+	"author": "xroo",
+	"authorUrl": "https://xrooshka.su",
 	"isDesktopOnly": false
 }
