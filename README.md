@@ -6,9 +6,18 @@
 
 ## Controls
 
+### PC
 > **Navigate**
 > `← → keys` or `MouseWheel`
 >
 > **Zoom**
 > `CTRL + MouseWheel` - zoom in, zoom out
 > `LMB` double click - reset zoom
+
+### Mobile
+> **Naviagte**
+> `← → swipe`
+>
+> **Zoom**
+> `Pinch` - zoom in, zoom out
+> `Double Tap` - doesn't work yet

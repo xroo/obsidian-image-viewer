@@ -1,7 +1,7 @@
 {
 	"id": "obsidian-image-viewer",
 	"name": "Image Viewer",
-	"version": "0.0.2",
+	"version": "0.0.3",
 	"minAppVersion": "0.15.0",
 	"description": "Simple image viewer for Obsidian. Scrolls images through the folder, zooms by CTRL+Scroll, has a thumbnails pannel",
 	"author": "xroo",
