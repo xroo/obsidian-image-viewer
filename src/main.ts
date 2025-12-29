@@ -66,6 +66,7 @@ export class ImageView extends FileView {
 	private readonly maxZoom = 5.0;
 	private readonly minZoom = 0.25;
 	private readonly zoomStep = 0.5;
+	private readonly eps = 0.01;
 
     private swipeStartX = 0;
     private swipeStartTime = 0;
@@ -100,13 +101,13 @@ export class ImageView extends FileView {
 
 		this.thumbnailStrip = wrapper.createEl('div', { cls: 'thumbnail-strip' });
 
-		// Panzoom сам повесит Pointer Events на this.mainImageEl (пан + pinch)
 		this.panzoom = Panzoom(this.mainImageEl, {
 			maxScale: this.maxZoom,
 			minScale: !isMobile ? this.minZoom : 1,
 			step: !isMobile ? this.zoomStep : 1,
 			panOnlyWhenZoomed: true,
 			pinchAndPan: true,
+
 			cursor: 'default',
 		});
 
@@ -123,13 +124,11 @@ export class ImageView extends FileView {
 		this.registerDomEvent(this.displayAreaEl, 'wheel', (e: WheelEvent) => {
 			if (e.ctrlKey || e.metaKey) {
 				e.preventDefault();
-				this.panzoom?.zoomWithWheel(e, {
-				});
-				const scale = this.panzoom.getScale();
-				if(scale <= 1) {
+				this.panzoom?.zoomWithWheel(e, {});
+				if(this.panzoom.getScale() <= 1 + this.eps) {
 					this.panzoom.setOptions({ disablePan: true, cursor: 'default' });
 					this.panzoom.reset();
-					this.panzoom.zoom(scale, { animate: false })
+					this.panzoom.zoom(scale)
 				} else {
 					this.panzoom.setOptions({ disablePan: false, cursor: 'grab' });
 				}
@@ -137,6 +136,11 @@ export class ImageView extends FileView {
 			}
 			void this.navigateImage(e.deltaY > 0 ? 1 : -1);
 		}, { passive: false });
+
+		this.registerDomEvent(this.mainImageEl, 'panzoomend', () => {
+			const scale = this.panzoom?.getScale() ?? 1;
+			if (scale <= 1 + this.eps) this.panzoom?.reset({ animate: true });
+		});
 
 		// Double click => reset pan/zoom
 		this.registerDomEvent(this.displayAreaEl, 'dblclick', () => this.panzoom?.reset());
@@ -162,8 +166,7 @@ export class ImageView extends FileView {
 	}
 
 	private handleTouchBlock(e: TouchEvent): void {
-	        e.stopPropagation();
-	        e.preventDefault();
+			e.stopPropagation();
 	}
 
 	// Keyboard navigation
@@ -181,9 +184,11 @@ export class ImageView extends FileView {
 				break;
 		}
 	}
+
+	// Touch screen navigation
 	private handleSwipeStart(e: TouchEvent): void {
 		if (e.touches.length !== 1) return;
-		if (this.panzoom?.getScale() > 1.0) return; // Zoomed - no swipe
+		if (this.panzoom?.getScale() > 1 + this.eps) return; // Zoomed - no swipe
 		this.handleTouchBlock(e);
 
 		this.swipeStartX = e.touches[0].clientX;
@@ -192,7 +197,7 @@ export class ImageView extends FileView {
 
 	private handleSwipeEnd(e: TouchEvent): void {
 		if (e.changedTouches.length !== 1) return;
-		if (this.panzoom?.getScale() > 1.0) return; // Zoomed - no swipe
+		if (this.panzoom?.getScale() > 1 + this.eps) return; // Zoomed - no swipe
 		if (e.type === 'touchcancel') return;
 		this.handleTouchBlock(e);
 
@@ -203,9 +208,9 @@ export class ImageView extends FileView {
 		if (deltaTime < this.SWIPE_MAX_TIME && 
 			Math.abs(deltaX) > this.SWIPE_THRESHOLD) {
 			if (deltaX > 0) {
-				void this.showPrevImage(); // Свайп вправо ← предыдущее
+				void this.navigateImage(-1); // Swipe left ← previous
 			} else {
-				void this.showNextImage(); // Свайп влево → следующее
+				void this.navigateImage(1); // Свайп right → next
 			}
 		}
 	}
@@ -216,11 +221,11 @@ export class ImageView extends FileView {
 		this.mainImageEl.alt = imageFile.name;
 		this.leaf.tabHeaderInnerTitleEl?.setText(imageFile.basename);
 
-		// Дождаться декодирования, чтобы Panzoom видел корректные размеры
+		// Wait for decoding so that Panzoom sees the correct dimensions
 		try {
 			await this.mainImageEl.decode();
 		} catch (_) {
-			// decode() может быть недоступен/упасть на некоторых форматах
+			// decode() may not be available/crashes on some formats
 		}
 
 		await this.updateImageList(imageFile);
@@ -232,7 +237,7 @@ export class ImageView extends FileView {
 		await this.leaf.openFile(file, { active: false });
 	}
 
-	// Получаем все изображения в папке текущего файла
+	// Getting all the images in  the folder
 	async updateImageList(currentFile: TFile): Promise<void> {
 		if (!currentFile?.parent) return;
 
@@ -254,15 +259,6 @@ export class ImageView extends FileView {
 		}
 	}
 
-	async showPrevImage(): Promise<void> {
-		await this.navigateImage(-1);
-	}
-
-	async showNextImage(): Promise<void> {
-		await this.navigateImage(1);
-	}
-
-	// Создание миниатюр (базовая версия)
 	async updateThumbnails(): Promise<void> {
 		if (!this.thumbnailStrip) return;
 
@@ -283,7 +279,7 @@ export class ImageView extends FileView {
 				}
 			});
 
-			// Обработчик клика на миниатюру
+			// Thumbnail click handler
 			if (index !== this.currentIndex) {
 				this.registerDomEvent(thumb, 'click', () => this.openInThisLeaf(imgFile));
 			}
@@ -305,7 +301,6 @@ export class ImageView extends FileView {
 	}
 
 	async onClose() {
-		// На всякий случай освобождаем ресурсы panzoom
 		(this.panzoom as any)?.destroy?.();
 		this.panzoom = undefined;
 	}
