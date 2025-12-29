@@ -1,4 +1,4 @@
-import { App, Plugin, TFile } from 'obsidian';
+import { App, Plugin, Notice, TFile } from 'obsidian';
 import { FileView, WorkspaceLeaf } from 'obsidian';
 import Panzoom from '@panzoom/panzoom';
 
@@ -53,6 +53,8 @@ export default class ImageViewer extends Plugin {
 }
 
 export class ImageView extends FileView {
+	private isMobile = (window.matchMedia('(pointer: coarse)').matches || window.matchMedia('(hover: none)').matches);
+
 	private mainImageEl!: HTMLImageElement;
 	private thumbnailStrip!: HTMLElement;
 	private displayAreaEl!: HTMLElement;
@@ -74,6 +76,9 @@ export class ImageView extends FileView {
     private readonly SWIPE_MAX_TIME = 300; // мс
     private lastTapTime = 0;
 
+	private lastTapX = 0;
+	private lastTapY = 0;
+
 	getViewType()                    { return VIEW_TYPE_IMAGE; }
 	getDisplayText(): string         { return 'Image Viewer'; }
 	getIcon(): string                { return 'images'; }
@@ -88,7 +93,6 @@ export class ImageView extends FileView {
 	}
 
 	private buildDom(): void {
-		const isMobile = (window.matchMedia('(pointer: coarse)').matches || window.matchMedia('(hover: none)').matches);
 		const container = this.contentEl;
 		container.empty();
 
@@ -103,12 +107,12 @@ export class ImageView extends FileView {
 
 		this.panzoom = Panzoom(this.mainImageEl, {
 			maxScale: this.maxZoom,
-			minScale: !isMobile ? this.minZoom : 1,
-			step: !isMobile ? this.zoomStep : 1,
+			minScale: this.minZoom,
+			step: !this.isMobile ? this.zoomStep : 1,
 			panOnlyWhenZoomed: true,
 			pinchAndPan: true,
-
 			cursor: 'default',
+			animate: true,
 		});
 
 		this.setupEventListeners();
@@ -123,9 +127,9 @@ export class ImageView extends FileView {
 		// - Otherwise => navigate images
 		this.registerDomEvent(this.displayAreaEl, 'wheel', (e: WheelEvent) => {
 			if (e.ctrlKey || e.metaKey) {
-				e.preventDefault();
 				this.panzoom?.zoomWithWheel(e, {});
-				if(this.panzoom.getScale() <= 1 + this.eps) {
+				const scale = this.panzoom?.getScale() ?? 1;
+				if(scale <= 1 + this.eps) {
 					this.panzoom.setOptions({ disablePan: true, cursor: 'default' });
 					this.panzoom.reset();
 					this.panzoom.zoom(scale)
@@ -138,8 +142,10 @@ export class ImageView extends FileView {
 		}, { passive: false });
 
 		this.registerDomEvent(this.mainImageEl, 'panzoomend', () => {
-			const scale = this.panzoom?.getScale() ?? 1;
-			if (scale <= 1 + this.eps) this.panzoom?.reset({ animate: true });
+			if(this.isMobile) {
+				const scale = this.panzoom?.getScale() ?? 1;
+				if (scale <= 1 + this.eps) this.panzoom?.reset({ animate: true });
+			}
 		});
 
 		// Double click => reset pan/zoom
@@ -166,7 +172,8 @@ export class ImageView extends FileView {
 	}
 
 	private handleTouchBlock(e: TouchEvent): void {
-			e.stopPropagation();
+		e.preventDefault()
+		e.stopPropagation();
 	}
 
 	// Keyboard navigation
@@ -196,7 +203,24 @@ export class ImageView extends FileView {
 	}
 
 	private handleSwipeEnd(e: TouchEvent): void {
-		if (e.changedTouches.length !== 1) return;
+		// Double tap
+		const now = Date.now();
+		const tapX = e.changedTouches[0].clientX;
+		const tapY = e.changedTouches[0].clientY;
+
+		const dt = now - this.lastTapTime;
+		const dist = Math.hypot(tapX - this.lastTapX, tapY - this.lastTapY);
+
+		if (dt < 350 && dist < 22) {
+			this.panzoom?.reset({ animate: true });
+			this.lastTapTime = 0;
+			return;
+		}
+
+		this.lastTapTime = now;
+		this.lastTapX = tapX;
+		this.lastTapY = tapY;
+
 		if (this.panzoom?.getScale() > 1 + this.eps) return; // Zoomed - no swipe
 		if (e.type === 'touchcancel') return;
 		this.handleTouchBlock(e);
